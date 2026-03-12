@@ -26,6 +26,83 @@ class BaseComponent:
     def draw(self, window): pass
     def on_mouse_press(self, window, x: float, y: float, button: int, modifiers: int) -> bool: return False
 
+
+def make_rect(left: float, bottom: float, right: float, top: float) -> dict:
+    """Return a normalized rect dict with derived width/height and center."""
+    l = float(min(left, right))
+    r = float(max(left, right))
+    b = float(min(bottom, top))
+    t = float(max(bottom, top))
+    w = max(0.0, r - l)
+    h = max(0.0, t - b)
+    return {
+        "left": l,
+        "right": r,
+        "bottom": b,
+        "top": t,
+        "width": w,
+        "height": h,
+        "cx": l + (w * 0.5),
+        "cy": b + (h * 0.5),
+    }
+
+
+def inset_rect(rect: dict, left: float = 0.0, right: float = 0.0, bottom: float = 0.0, top: float = 0.0) -> dict:
+    return make_rect(
+        rect["left"] + float(left),
+        rect["bottom"] + float(bottom),
+        rect["right"] - float(right),
+        rect["top"] - float(top),
+    )
+
+
+def split_rect_vertical(rect: dict, top_ratio: float = 0.5, gap: float = 0.0) -> Tuple[dict, dict]:
+    """Split rect into (top_rect, bottom_rect) with an optional gap."""
+    ratio = max(0.0, min(1.0, float(top_ratio)))
+    gap_val = max(0.0, float(gap))
+    usable_h = max(0.0, rect["height"] - gap_val)
+    top_h = usable_h * ratio
+    bottom_h = usable_h - top_h
+
+    top_rect = make_rect(
+        rect["left"],
+        rect["bottom"] + bottom_h + gap_val,
+        rect["right"],
+        rect["top"],
+    )
+    bottom_rect = make_rect(
+        rect["left"],
+        rect["bottom"],
+        rect["right"],
+        rect["bottom"] + bottom_h,
+    )
+    return top_rect, bottom_rect
+
+
+def split_rect_rows(rect: dict, ratios: List[float], gap: float = 0.0) -> List[dict]:
+    """Split a rect into N rows from top to bottom based on ratios."""
+    if not ratios:
+        return []
+
+    cleaned = [max(0.0, float(r)) for r in ratios]
+    total = sum(cleaned)
+    if total <= 0.0:
+        cleaned = [1.0 for _ in ratios]
+        total = float(len(ratios))
+
+    gap_val = max(0.0, float(gap))
+    total_gap = gap_val * max(0, len(cleaned) - 1)
+    usable_h = max(0.0, rect["height"] - total_gap)
+
+    rows = []
+    cursor_top = rect["top"]
+    for i, ratio in enumerate(cleaned):
+        row_h = usable_h * (ratio / total)
+        row_bottom = cursor_top - row_h
+        rows.append(make_rect(rect["left"], row_bottom, rect["right"], cursor_top))
+        cursor_top = row_bottom - (gap_val if i < len(cleaned) - 1 else 0.0)
+    return rows
+
 class LegendComponent(BaseComponent):
     def __init__(self, x: int = 20, y: int = 220, visible=True): # Increased y to 220 to fit all lines
         self.x = x

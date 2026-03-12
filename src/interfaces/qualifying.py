@@ -11,6 +11,10 @@ from src.ui_components import (
     LegendComponent,
     ControlsPopupComponent,
     QualifyingLapTimeComponent,
+    make_rect,
+    inset_rect,
+    split_rect_vertical,
+    split_rect_rows,
 )
 from src.f1_data import get_driver_quali_telemetry
 from src.f1_data import FPS
@@ -28,18 +32,19 @@ TOP_MARGIN = 40
 BOTTOM_MARGIN = 40
 
 class QualifyingReplay(arcade.Window):
-    def __init__(self, session, data, circuit_rotation=0, left_ui_margin=340, right_ui_margin=0, title="Qualifying Results"):
+    def __init__(self, session, data, circuit_rotation=0, left_ui_margin=340, right_ui_margin=0, top_ui_margin=50, bottom_ui_margin=140, title="Qualifying Results"):
         super().__init__(width=SCREEN_WIDTH, height=SCREEN_HEIGHT, title=title, resizable=True)
         self.maximize()
         
         self.session = session
         self.data = data
+        self.layout = {}
         self.leaderboard = LapTimeLeaderboardComponent(
             x=LEFT_MARGIN,
         )
         self.race_controls_comp = RaceControlsComponent(
-            center_x= self.width // 2 + 100,
-            center_y= 40
+            center_x=self.width // 2,
+            center_y=40
         )
         self.qualifying_lap_time_comp = QualifyingLapTimeComponent()
         self.leaderboard.set_entries(self.data.get("results", []))
@@ -80,6 +85,8 @@ class QualifyingReplay(arcade.Window):
         self._sin_rot = float(np.sin(self._rot_rad))
         self.left_ui_margin = left_ui_margin
         self.right_ui_margin = right_ui_margin
+        self.top_ui_margin = top_ui_margin
+        self.bottom_ui_margin = bottom_ui_margin
 
         self.chart_active = False
         self.show_comparison_telemetry = True
@@ -151,11 +158,67 @@ class QualifyingReplay(arcade.Window):
 
         arcade.set_background_color(arcade.color.BLACK)
 
+        self.compute_layout(self.width, self.height)
         self.update_scaling(self.width, self.height)
 
         self.is_rewinding = False
         self.is_forwarding = False
         self.was_paused_before_hold = False
+
+    def compute_layout(self, screen_w: float, screen_h: float):
+        full = make_rect(0.0, 0.0, float(screen_w), float(screen_h))
+
+        left_strip_w = max(300.0, float(self.left_ui_margin))
+        right_strip_w = max(40.0, float(self.right_ui_margin))
+        top_strip_h = max(40.0, float(self.top_ui_margin))
+        bottom_strip_h = max(100.0, float(self.bottom_ui_margin))
+
+        track_rect = make_rect(
+            left_strip_w,
+            bottom_strip_h,
+            max(left_strip_w + 1.0, full["right"] - right_strip_w),
+            max(bottom_strip_h + 1.0, full["top"] - top_strip_h),
+        )
+
+        # Reserve a fixed bottom band for playback controls so content never overlaps it.
+        controls_band_h = max(90.0, min(140.0, full["height"] * 0.14))
+        controls_band = make_rect(
+            left_strip_w,
+            full["bottom"],
+            full["right"] - right_strip_w,
+            full["bottom"] + controls_band_h,
+        )
+
+        # The telemetry content area sits to the right of leaderboard and above controls.
+        content_left = self.leaderboard.x + getattr(self.leaderboard, "width", 240) + 40
+        content_rect = make_rect(
+            content_left,
+            controls_band["top"] + 14.0,
+            full["right"] - 40.0,
+            full["top"] - 40.0,
+        )
+
+        chart_rect, map_rect = split_rect_vertical(content_rect, top_ratio=0.62, gap=8.0)
+        chart_rows = split_rect_rows(chart_rect, [0.5, 0.25, 0.25], gap=30.0)
+
+        self.layout = {
+            "full": full,
+            "track": track_rect,
+            "controls_band": controls_band,
+            "content": content_rect,
+            "chart": chart_rect,
+            "map": map_rect,
+            "speed": chart_rows[0] if len(chart_rows) > 0 else chart_rect,
+            "gear": chart_rows[1] if len(chart_rows) > 1 else chart_rect,
+            "controls": chart_rows[2] if len(chart_rows) > 2 else chart_rect,
+            "legend_left": max(12.0, left_strip_w - 320.0),
+            "controls_center_x": controls_band["cx"],
+            "controls_center_y": controls_band["bottom"] + (controls_band["height"] * 0.5),
+        }
+
+        self.legend_comp.x = int(self.layout["legend_left"])
+        self.race_controls_comp.center_x = self.layout["controls_center_x"]
+        self.race_controls_comp.center_y = self.layout["controls_center_y"]
 
     def update_scaling(self, screen_w, screen_h):
         """
@@ -192,22 +255,27 @@ class QualifyingReplay(arcade.Window):
         world_w = max(1.0, world_x_max - world_x_min)
         world_h = max(1.0, world_y_max - world_y_min)
         
-        # Reserve left/right UI margins before applying padding so the track
-        # never overlaps side UI elements (leaderboard, telemetry, legends).
-        inner_w = max(1.0, screen_w - self.left_ui_margin - self.right_ui_margin)
-        usable_w = inner_w * (1 - 2 * padding)
-        usable_h = screen_h * (1 - 2 * padding)
+        track_rect = self.layout.get("track") if isinstance(self.layout, dict) else None
+        if not track_rect:
+            track_rect = make_rect(
+                self.left_ui_margin,
+                self.bottom_ui_margin,
+                screen_w - self.right_ui_margin,
+                screen_h - self.top_ui_margin,
+            )
+        inner = inset_rect(track_rect, left=track_rect["width"] * padding, right=track_rect["width"] * padding,
+                           bottom=track_rect["height"] * padding, top=track_rect["height"] * padding)
+        usable_w = max(1.0, inner["width"])
+        usable_h = max(1.0, inner["height"])
 
         # Calculate scale to fit whichever dimension is the limiting factor
         scale_x = usable_w / world_w
         scale_y = usable_h / world_h
         self.world_scale = min(scale_x, scale_y)
 
-        # Center the world in the screen (rotation done about original centre)
-        # world_cx/world_cy are unchanged by rotation about centre
-        # Center within the available inner area (left_ui_margin .. screen_w - right_ui_margin)
-        screen_cx = self.left_ui_margin + inner_w / 2
-        screen_cy = screen_h / 2
+        # Center within reserved track region.
+        screen_cx = inner["cx"]
+        screen_cy = inner["cy"]
 
         self.tx = screen_cx - self.world_scale * world_cx
         self.ty = screen_cy - self.world_scale * world_cy
@@ -228,50 +296,41 @@ class QualifyingReplay(arcade.Window):
                 comparison_data = self.data.get("telemetry", {}).get(fastest_driver.get("code")) if fastest_driver and self.show_comparison_telemetry else None
                 comparison_telemetry = comparison_data.get("Q3").get("frames", []) if comparison_data and self.show_comparison_telemetry and fastest_driver and ((fastest_driver.get("code") != self.loaded_driver_code) or (fastest_driver.get("code") == self.loaded_driver_code and self.loaded_driver_segment != "Q3")) else None
 
-                # right-hand area (to the right of leaderboard)
-                area_left = self.leaderboard.x + getattr(self.leaderboard, "width", 240) + 40
-                area_right = self.width - RIGHT_MARGIN
-                area_top = self.height - TOP_MARGIN
-                area_bottom = BOTTOM_MARGIN
-                area_w = max(10, area_right - area_left)
-                area_h = max(10, area_top - area_bottom)
+                # Fetch precomputed layout rectangles (single layout authority).
+                content_rect = self.layout.get("content", make_rect(0, 0, self.width, self.height))
+                chart_rect = self.layout.get("chart", content_rect)
+                speed_rect = self.layout.get("speed", chart_rect)
+                gear_rect = self.layout.get("gear", chart_rect)
+                ctrl_rect = self.layout.get("controls", chart_rect)
+                map_rect = self.layout.get("map", content_rect)
 
-                # Split vertically: top half = chart, bottom half = circuit map
-                top_half_h = int(area_h * 0.5)
-                chart_top = area_top
-                chart_bottom = area_top - top_half_h
-                chart_left = area_left
-                chart_right = area_right
-                chart_w = max(10, chart_right - chart_left)
-                chart_h = max(10, chart_top - chart_bottom)
+                chart_left = chart_rect["left"]
+                chart_right = chart_rect["right"]
+                chart_top = chart_rect["top"]
+                chart_bottom = chart_rect["bottom"]
+                chart_w = max(10, chart_rect["width"])
+                chart_h = max(10, chart_rect["height"])
 
-                # Divide chart area into 3 sub-areas:
-                # - Top 50% of the chart area: Speed
-                # - Next 25%: Gears
-                # - Bottom 25%: Brake + Throttle
+                speed_top = speed_rect["top"]
+                speed_bottom = speed_rect["bottom"]
+                speed_h = max(10, speed_rect["height"])
 
-                M = 30 # margin between charts
-                VP = 5 # vertical padding between charts
-                total_margin = 2 * M
-                effective_h = max(0, chart_h - total_margin)
+                gear_top = gear_rect["top"]
+                gear_bottom = gear_rect["bottom"]
+                gear_h = max(10, gear_rect["height"])
 
-                speed_h = int(effective_h * 0.5)
-                gear_h = int(effective_h * 0.25)
-                ctrl_h = effective_h - speed_h - gear_h
+                ctrl_top = ctrl_rect["top"]
+                ctrl_bottom = ctrl_rect["bottom"]
+                ctrl_h = max(10, ctrl_rect["height"])
 
-                speed_top = chart_top
-                speed_bottom = speed_top - speed_h
-                gear_top = speed_bottom - M
-                gear_bottom = gear_top - gear_h
-                ctrl_top = gear_bottom - M
-                ctrl_bottom = ctrl_top - ctrl_h
+                map_left = map_rect["left"]
+                map_right = map_rect["right"]
+                map_top = map_rect["top"]
+                map_bottom = map_rect["bottom"]
+                map_w = max(10, map_rect["width"])
+                map_h = max(10, map_rect["height"])
 
-                map_top = ctrl_bottom - 8
-                map_bottom = area_bottom
-                map_left = area_left
-                map_right = area_right
-                map_w = max(10, map_right - map_left)
-                map_h = max(10, map_top - map_bottom)
+                VP = 5
 
                 # Backgrounds for the charts
 
@@ -557,15 +616,29 @@ class QualifyingReplay(arcade.Window):
                 except Exception as e:
                     print("Chart draw error (controls):", e)
                 
-                # Draw qualifying lap time component at top of map area
-                self.qualifying_lap_time_comp.x = map_left
+                # Split map area into two panels:
+                # left = info card/text, right = circuit map. This avoids left overlap
+                # when there is available space on the right side.
+                panel_gap = 20.0
+                info_w = min(360.0, max(240.0, map_w * 0.38))
+                if info_w + panel_gap > map_w - 120.0:
+                    info_w = max(180.0, map_w * 0.28)
+
+                info_left = map_left
+                info_right = min(map_right - 120.0, info_left + info_w)
+                track_left = min(map_right - 100.0, info_right + panel_gap)
+                track_right = map_right
+                track_w = max(100.0, track_right - track_left)
+
+                # Draw qualifying lap time component in the dedicated info panel
+                self.qualifying_lap_time_comp.x = info_left
                 self.qualifying_lap_time_comp.y = map_top
                 self.qualifying_lap_time_comp.fastest_driver = fastest_driver
                 self.qualifying_lap_time_comp.fastest_driver_sector_times = comparison_data.get("Q3").get("sector_times", {}) if comparison_data and self.show_comparison_telemetry and fastest_driver and ((fastest_driver.get("code") != self.loaded_driver_code) or (fastest_driver.get("code") == self.loaded_driver_code and self.loaded_driver_segment != "Q3")) else None
                 self.qualifying_lap_time_comp.draw(self)
 
                 y_offset = map_top - 48
-                arcade.Text(f"Playback Speed: {self.playback_speed:.1f}x", map_left + 10, y_offset - 130, arcade.color.ANTI_FLASH_WHITE, 14).draw()
+                arcade.Text(f"Playback Speed: {self.playback_speed:.1f}x", info_left + 10, y_offset - 130, arcade.color.ANTI_FLASH_WHITE, 14).draw()
 
                 # Legends
                 legend_x = chart_right - 100
@@ -582,7 +655,7 @@ class QualifyingReplay(arcade.Window):
                     world_h = max(1.0, world_y_max - world_y_min)
 
                     pad = 0.06
-                    usable_w = map_w * (1 - 2 * pad)
+                    usable_w = track_w * (1 - 2 * pad)
                     usable_h = map_h * (1 - 2 * pad)
 
                     scale_x = usable_w / world_w
@@ -592,7 +665,18 @@ class QualifyingReplay(arcade.Window):
                     world_cx = (world_x_min + world_x_max) / 2
                     world_cy = (world_y_min + world_y_max) / 2
 
-                    screen_cx = map_left + map_w / 2
+                    # Height-constrained layouts create horizontal slack.
+                    # Bias the map to the right so it does not crowd the left info panel.
+                    scaled_world_w = world_w * world_scale
+                    slack_x = max(0.0, track_w - scaled_world_w)
+                    if map_h < 240:
+                        right_bias = 0.85
+                    elif map_h < 320:
+                        right_bias = 0.75
+                    else:
+                        right_bias = 0.60
+
+                    screen_cx = track_left + (scaled_world_w * 0.5) + (slack_x * right_bias)
                     screen_cy = map_bottom + map_h / 2
 
                     tx = screen_cx - world_scale * world_cx
@@ -697,8 +781,8 @@ class QualifyingReplay(arcade.Window):
         self.leaderboard.draw(self)
         self.qualifying_segment_selector_modal.draw(self)
 
-        # Controls Legend - Bottom Left (keeps small offset from left UI edge)
-        self.legend_comp.x = max(12, self.left_ui_margin - 320) if hasattr(self, "left_ui_margin") else 20
+        # Controls legend anchored by computed layout.
+        self.legend_comp.x = int(self.layout.get("legend_left", 20))
         self.legend_comp.draw(self)
         
         # Show race controls only when telemetry is loaded (driver + session selected)
@@ -714,8 +798,11 @@ class QualifyingReplay(arcade.Window):
     def on_resize(self, width: int, height: int):
         """Handle the window being resized."""
         super().on_resize(width, height)
+        self.compute_layout(width, height)
         self.update_scaling(width, height)
         self.race_controls_comp.on_resize(self)
+        self.race_controls_comp.center_x = self.layout.get("controls_center_x", self.width / 2)
+        self.race_controls_comp.center_y = self.layout.get("controls_center_y", 40)
 
     def _interpolate_points(self, xs, ys, interp_points=2000):
         t_old = np.linspace(0, 1, len(xs))

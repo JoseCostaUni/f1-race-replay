@@ -15,7 +15,9 @@ from src.ui_components import (
     SessionInfoComponent,
     extract_race_events,
     build_track_from_example_lap,
-    draw_finish_line
+    draw_finish_line,
+    make_rect,
+    inset_rect,
 )
 from src.tyre_degradation_integration import TyreDegradationIntegrator
 from src.services.stream import TelemetryStreamServer
@@ -29,7 +31,8 @@ PLAYBACK_SPEEDS = [0.1, 0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 2
 class F1RaceReplayWindow(arcade.Window):
     def __init__(self, frames, track_statuses, example_lap, drivers, title,
                  playback_speed=1.0, driver_colors=None, circuit_rotation=0.0,
-                 left_ui_margin=340, right_ui_margin=260, total_laps=None, visible_hud=True,
+                 left_ui_margin=340, right_ui_margin=260, top_ui_margin=50, bottom_ui_margin=140,
+                 total_laps=None, visible_hud=True,
                  session_info=None, session=None, enable_telemetry=False):
         # Set resizable to True so the user can adjust mid-sim
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
@@ -69,13 +72,15 @@ class F1RaceReplayWindow(arcade.Window):
         self.finished_drivers = []
         self.left_ui_margin = left_ui_margin
         self.right_ui_margin = right_ui_margin
+        self.top_ui_margin = top_ui_margin
+        self.bottom_ui_margin = bottom_ui_margin
         self.toggle_drs_zones = True 
         self.show_driver_labels = False
+        self.layout = {}
         # UI components
-        leaderboard_x = max(20, self.width - self.right_ui_margin + 12)
-        self.leaderboard_comp = LeaderboardComponent(x=leaderboard_x, width=240, visible=visible_hud)
+        self.leaderboard_comp = LeaderboardComponent(x=20, width=240, visible=visible_hud)
         self.weather_comp = WeatherComponent(left=20, top_offset=170, visible=visible_hud)
-        self.legend_comp = LegendComponent(x=max(12, self.left_ui_margin - 320), visible=visible_hud)
+        self.legend_comp = LegendComponent(x=20, visible=visible_hud)
         self.driver_info_comp = DriverInfoComponent(left=20, width=300)
         self.controls_popup_comp = ControlsPopupComponent()
 
@@ -209,6 +214,7 @@ class F1RaceReplayWindow(arcade.Window):
         self.time_text = arcade.Text("", 20, self.height - 80, arcade.color.WHITE, 20, anchor_y="top")
         self.status_text = arcade.Text("", 20, self.height - 120, arcade.color.WHITE, 24, bold=True, anchor_y="top")
 
+        self.compute_layout(self.width, self.height)
         # Trigger initial scaling calculation
         self.update_scaling(self.width, self.height)
 
@@ -220,6 +226,51 @@ class F1RaceReplayWindow(arcade.Window):
         
         # Broadcast initial telemetry state
         self._broadcast_telemetry_state()
+
+    def compute_layout(self, screen_w: float, screen_h: float):
+        """Compute all major layout rectangles once and reuse across draw paths."""
+        full = make_rect(0.0, 0.0, float(screen_w), float(screen_h))
+
+        left_strip_w = max(260.0, float(self.left_ui_margin))
+        right_strip_w = max(240.0, float(self.right_ui_margin))
+        top_strip_h = max(40.0, float(self.top_ui_margin))
+        bottom_strip_h = max(110.0, float(self.bottom_ui_margin))
+
+        track_rect = make_rect(
+            left_strip_w,
+            bottom_strip_h,
+            max(left_strip_w + 1.0, full["right"] - right_strip_w),
+            max(bottom_strip_h + 1.0, full["top"] - top_strip_h),
+        )
+
+        left_strip = make_rect(full["left"], full["bottom"], left_strip_w, full["top"])
+        right_strip = make_rect(full["right"] - right_strip_w, full["bottom"], full["right"], full["top"])
+        bottom_strip = make_rect(track_rect["left"], full["bottom"], track_rect["right"], bottom_strip_h)
+
+        leaderboard_left = right_strip["left"] + 12.0
+        legend_left = max(12.0, left_strip["left"] + 12.0)
+
+        self.layout = {
+            "full": full,
+            "track": track_rect,
+            "left_strip": left_strip,
+            "right_strip": right_strip,
+            "bottom_strip": bottom_strip,
+            "leaderboard_left": leaderboard_left,
+            "legend_left": legend_left,
+            "controls_center_x": bottom_strip["cx"],
+            "controls_center_y": max(40.0, bottom_strip["bottom"] + 70.0),
+            "progress_left_margin": track_rect["left"],
+            "progress_right_margin": max(0.0, full["right"] - track_rect["right"]),
+        }
+
+        self.leaderboard_comp.x = int(self.layout["leaderboard_left"])
+        self.legend_comp.x = int(self.layout["legend_left"])
+        self.weather_comp.left = int(left_strip["left"] + 20.0)
+        self.race_controls_comp.center_x = self.layout["controls_center_x"]
+        self.race_controls_comp.center_y = self.layout["controls_center_y"]
+        self.progress_bar_comp.left_margin = int(self.layout["progress_left_margin"])
+        self.progress_bar_comp.right_margin = int(self.layout["progress_right_margin"])
 
     def _broadcast_telemetry_state(self):
         """Broadcast current telemetry state to connected clients."""
@@ -343,22 +394,27 @@ class F1RaceReplayWindow(arcade.Window):
         world_w = max(1.0, world_x_max - world_x_min)
         world_h = max(1.0, world_y_max - world_y_min)
         
-        # Reserve left/right UI margins before applying padding so the track
-        # never overlaps side UI elements (leaderboard, telemetry, legends).
-        inner_w = max(1.0, screen_w - self.left_ui_margin - self.right_ui_margin)
-        usable_w = inner_w * (1 - 2 * padding)
-        usable_h = screen_h * (1 - 2 * padding)
+        track_rect = self.layout.get("track") if isinstance(self.layout, dict) else None
+        if not track_rect:
+            track_rect = make_rect(
+                self.left_ui_margin,
+                self.bottom_ui_margin,
+                screen_w - self.right_ui_margin,
+                screen_h - self.top_ui_margin,
+            )
+        inner = inset_rect(track_rect, left=track_rect["width"] * padding, right=track_rect["width"] * padding,
+                           bottom=track_rect["height"] * padding, top=track_rect["height"] * padding)
+        usable_w = max(1.0, inner["width"])
+        usable_h = max(1.0, inner["height"])
 
         # Calculate scale to fit whichever dimension is the limiting factor
         scale_x = usable_w / world_w
         scale_y = usable_h / world_h
         self.world_scale = min(scale_x, scale_y)
 
-        # Center the world in the screen (rotation done about original centre)
-        # world_cx/world_cy are unchanged by rotation about centre
-        # Center within the available inner area (left_ui_margin .. screen_w - right_ui_margin)
-        screen_cx = self.left_ui_margin + inner_w / 2
-        screen_cy = screen_h / 2
+        # Center within reserved track drawing area only.
+        screen_cx = inner["cx"]
+        screen_cy = inner["cy"]
 
         self.tx = screen_cx - self.world_scale * world_cx
         self.ty = screen_cy - self.world_scale * world_cy
@@ -370,9 +426,9 @@ class F1RaceReplayWindow(arcade.Window):
     def on_resize(self, width, height):
         """Called automatically by Arcade when window is resized."""
         super().on_resize(width, height)
+        self.compute_layout(width, height)
         self.update_scaling(width, height)
         # notify components
-        self.leaderboard_comp.x = max(20, self.width - self.right_ui_margin + 12)
         for c in (self.leaderboard_comp, self.weather_comp, self.legend_comp, self.driver_info_comp, self.progress_bar_comp, self.race_controls_comp):
             c.on_resize(self)
         
