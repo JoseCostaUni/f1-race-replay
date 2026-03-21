@@ -3,7 +3,6 @@ import pickle
 import sys
 from datetime import timedelta, date
 from multiprocessing import Pool, cpu_count
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fastf1
 import fastf1.plotting
@@ -13,7 +12,6 @@ import pandas as pd
 from src.lib.settings import get_settings
 from src.lib.time import parse_time_string
 from src.lib.tyres import get_tyre_compound_int
-from src.performance_profiler import get_profiler, time_section
 
 
 def enable_cache():
@@ -31,104 +29,6 @@ def enable_cache():
 
 FPS = 25
 DT = 1 / FPS
-
-# Module-level cache for event schedules to avoid redundant API calls
-_schedule_cache = {}
-
-
-def _get_event_schedule_cached(year):
-    """Get event schedule with caching to avoid redundant API calls."""
-    if year not in _schedule_cache:
-        _schedule_cache[year] = fastf1.get_event_schedule(year)
-    return _schedule_cache[year]
-
-
-def _concurrent_fetch_lap_telemetries(laps, max_workers=12):
-    """
-    Concurrently fetch telemetry for multiple laps using ThreadPoolExecutor.
-    
-    Args:
-        laps: DataFrame of laps (from session.laps.pick_drivers() or similar)
-        max_workers: Number of concurrent threads (default 12)
-    
-    Returns:
-        List of (lap_index, lap_row, telemetry_df) tuples in original order, 
-        excluding laps where telemetry fetch failed
-    """
-    if laps.empty:
-        return []
-    
-    # Collect all lap objects with their index
-    lap_list = []
-    for idx, lap in laps.iterlaps():
-        lap_list.append((idx, lap))
-    
-    telemetry_data = [None] * len(lap_list)
-    
-    def fetch_single_lap(list_idx, lap_idx, lap):
-        try:
-            tel = lap.get_telemetry()
-            return list_idx, lap_idx, lap, tel
-        except Exception as e:
-            print(f"Warning: Failed to fetch telemetry for lap {lap_idx}: {e}")
-            return list_idx, lap_idx, lap, None
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(fetch_single_lap, list_idx, lap_idx, lap): list_idx
-            for list_idx, (lap_idx, lap) in enumerate(lap_list)
-        }
-        for future in as_completed(futures):
-            try:
-                list_idx, lap_idx, lap, tel = future.result()
-                telemetry_data[list_idx] = (lap, tel)
-            except Exception as e:
-                print(f"Thread error fetching telemetry: {e}")
-    
-    # Return only successful fetches: [(lap_row, telemetry_df), ...]
-    return [item for item in telemetry_data if item is not None]
-
-
-def load_sessions_parallel(year, round_number, session_types=None):
-    """
-    Load multiple F1 sessions in parallel using ThreadPoolExecutor (I/O bound).
-    
-    Args:
-        year: Season year
-        round_number: Round number
-        session_types: List of session types to load ['R', 'Q', 'S', 'SQ']
-                      Defaults to ['R', 'Q']
-    
-    Returns:
-        Dict: {session_type: session_object} with only successfully loaded sessions
-    """
-    if session_types is None:
-        session_types = ['R', 'Q']
-    
-    sessions = {}
-    
-    def _load_single_session(session_type):
-        try:
-            print(f"Loading {session_type} session...")
-            session = fastf1.get_session(year, round_number, session_type)
-            session.load(telemetry=True, weather=True)
-            print(f"Loaded {session_type} session successfully")
-            return session_type, session
-        except Exception as e:
-            print(f"Warning: Could not load {session_type} session: {e}")
-            return session_type, None
-    
-    with ThreadPoolExecutor(max_workers=len(session_types)) as executor:
-        futures = [
-            executor.submit(_load_single_session, st) 
-            for st in session_types
-        ]
-        for future in futures:
-            session_type, session = future.result()
-            if session is not None:
-                sessions[session_type] = session
-    
-    return sessions
 
 
 def _process_single_driver(args):
@@ -159,17 +59,16 @@ def _process_single_driver(args):
 
     total_dist_so_far = 0.0
 
-    # Concurrently fetch all lap telemetries instead of sequential fetching
-    lap_telem_pairs = _concurrent_fetch_lap_telemetries(laps_driver, max_workers=12)
+    # iterate laps in order
+    for _, lap in laps_driver.iterlaps():
+        # get telemetry for THIS lap only
+        lap_tel = lap.get_telemetry()
+        lap_number = lap.LapNumber
+        tyre_compund_as_int = get_tyre_compound_int(lap.Compound)
+        tyre_life = lap.TyreLife if pd.notna(lap.TyreLife) else 0
 
-    # Process all telemetry data in order
-    for lap_row, lap_tel in lap_telem_pairs:
         if lap_tel.empty:
             continue
-
-        lap_number = lap_row.LapNumber
-        tyre_compund_as_int = get_tyre_compound_int(lap_row.Compound)
-        tyre_life = lap_row.TyreLife if pd.notna(lap_row.TyreLife) else 0
 
         t_lap = lap_tel["SessionTime"].dt.total_seconds().to_numpy()
         x_lap = lap_tel["X"].to_numpy()
@@ -198,10 +97,6 @@ def _process_single_driver(args):
         drs_all.append(drs_lap)
         throttle_all.append(throttle_lap)
         brake_all.append(brake_lap)
-
-        # Update race distance for next lap
-        if len(d_lap) > 0:
-            total_dist_so_far += d_lap[-1]
 
     if not t_all:
         return None
@@ -642,7 +537,6 @@ def _compute_safety_car_positions(frames, track_statuses, session):
 
 
 def get_race_telemetry(session, session_type="R"):
-    profiler = get_profiler()
     event_name = str(session).replace(" ", "_")
     cache_suffix = "sprint" if session_type == "S" else "race"
 
@@ -650,17 +544,14 @@ def get_race_telemetry(session, session_type="R"):
 
     try:
         if "--refresh-data" not in sys.argv:
-            with time_section("Cache Load", f"{cache_suffix} telemetry pkl"):
-                with open(
-                    f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "rb"
-                ) as f:
-                    frames = pickle.load(f)
-                    profiler.record_cache_hit()
-                    print(f"✅ Loaded precomputed {cache_suffix} telemetry data from cache.")
-                    print("The replay should begin in a new window shortly!")
-                    return frames
+            with open(
+                f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "rb"
+            ) as f:
+                frames = pickle.load(f)
+                print(f"Loaded precomputed {cache_suffix} telemetry data.")
+                print("The replay should begin in a new window shortly!")
+                return frames
     except FileNotFoundError:
-        profiler.record_cache_miss()
         pass  # Need to compute from scratch
 
     drivers = session.drivers
@@ -676,16 +567,15 @@ def get_race_telemetry(session, session_type="R"):
 
     # 1. Get all of the drivers telemetry data using multiprocessing
     # Prepare arguments for parallel processing
-    with time_section("Multiprocessing Drivers", f"{len(drivers)} drivers, {session_type} session"):
-        print(f"Processing {len(drivers)} drivers in parallel...")
-        driver_args = [
-            (driver_no, session, driver_codes[driver_no]) for driver_no in drivers
-        ]
+    print(f"Processing {len(drivers)} drivers in parallel...")
+    driver_args = [
+        (driver_no, session, driver_codes[driver_no]) for driver_no in drivers
+    ]
 
-        num_processes = min(int(cpu_count() * 1.5), len(drivers))
+    num_processes = min(cpu_count(), len(drivers))
 
-        with Pool(processes=num_processes) as pool:
-            results = pool.map(_process_single_driver, driver_args)
+    with Pool(processes=num_processes) as pool:
+        results = pool.map(_process_single_driver, driver_args)
 
     # Process results
     for result in results:
@@ -1339,7 +1229,6 @@ def _process_quali_driver(args):
 
 
 def get_quali_telemetry(session, session_type="Q"):
-    profiler = get_profiler()
     # This function is going to get the results from qualifying and the telemetry for each drivers' fastest laps in each qualifying segment
 
     # The structure of the returned data will be:
@@ -1361,17 +1250,14 @@ def get_quali_telemetry(session, session_type="Q"):
     # Check if this data has already been computed
     try:
         if "--refresh-data" not in sys.argv:
-            with time_section("Cache Load", f"{cache_suffix} telemetry pkl"):
-                with open(
-                    f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "rb"
-                ) as f:
-                    data = pickle.load(f)
-                    profiler.record_cache_hit()
-                    print(f"✅ Loaded precomputed {cache_suffix} telemetry data from cache.")
-                    print("The replay should begin in a new window shortly!")
-                    return data
+            with open(
+                f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "rb"
+            ) as f:
+                data = pickle.load(f)
+                print(f"Loaded precomputed {cache_suffix} telemetry data.")
+                print("The replay should begin in a new window shortly!")
+                return data
     except FileNotFoundError:
-        profiler.record_cache_miss()
         pass  # Need to compute from scratch
 
     qualifying_results = get_qualifying_results(session)
@@ -1389,13 +1275,12 @@ def get_quali_telemetry(session, session_type="Q"):
 
     driver_args = [(session, driver_codes[driver_no]) for driver_no in session.drivers]
 
-    with time_section("Multiprocessing Drivers", f"{len(session.drivers)} drivers, {session_type} session"):
-        print(f"Processing {len(session.drivers)} drivers in parallel...")
+    print(f"Processing {len(session.drivers)} drivers in parallel...")
 
-        num_processes = min(int(cpu_count() * 1.5), len(session.drivers))
+    num_processes = min(cpu_count(), len(session.drivers))
 
-        with Pool(processes=num_processes) as pool:
-            results = pool.map(_process_quali_driver, driver_args)
+    with Pool(processes=num_processes) as pool:
+        results = pool.map(_process_quali_driver, driver_args)
     for result in results:
         driver_code = result["driver_code"]
         telemetry_data[driver_code] = {
@@ -1436,7 +1321,7 @@ def get_quali_telemetry(session, session_type="Q"):
 def get_race_weekends_by_year(year):
     """Returns a list of race weekends for a given year."""
     enable_cache()
-    schedule = _get_event_schedule_cached(year)
+    schedule = fastf1.get_event_schedule(year)
     weekends = []
     for _, event in schedule.iterrows():
         if event.is_testing():
@@ -1470,7 +1355,7 @@ def get_race_weekends_by_place(place):
 
     for year in range(2018,current_year): #Edit according to data availability (current data till last year)
         try:
-            schedule=_get_event_schedule_cached(year)
+            schedule=fastf1.get_event_schedule(year)
         except Exception:
             continue
 
@@ -1498,7 +1383,7 @@ def get_all_unique_race_names(start_year=2018, end_year=2025): #update as necess
     
     for year in range(start_year, end_year+1):
         try:
-            schedule=_get_event_schedule_cached(year)
+            schedule=fastf1.get_event_schedule(year)
         except Exception:
             continue
 
@@ -1515,7 +1400,7 @@ def list_rounds(year):
     """Lists all rounds for a given year."""
     enable_cache()
     print(f"F1 Schedule {year}")
-    schedule = _get_event_schedule_cached(year)
+    schedule = fastf1.get_event_schedule(year)
     for _, event in schedule.iterrows():
         print(f"{event['RoundNumber']}: {event['EventName']}")
 
@@ -1524,7 +1409,7 @@ def list_sprints(year):
     """Lists all sprint rounds for a given year."""
     enable_cache()
     print(f"F1 Sprint Races {year}")
-    schedule = _get_event_schedule_cached(year)
+    schedule = fastf1.get_event_schedule(year)
     sprint_name = "sprint_qualifying"
     if year == 2023:
         sprint_name = "sprint_shootout"
