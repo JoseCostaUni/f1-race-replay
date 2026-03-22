@@ -3,6 +3,7 @@ import pickle
 import sys
 from datetime import timedelta, date
 from multiprocessing import Pool, cpu_count
+from typing import Optional, Dict, Any, List, Tuple, Union
 
 import fastf1
 import fastf1.plotting
@@ -14,7 +15,8 @@ from src.lib.time import parse_time_string
 from src.lib.tyres import get_tyre_compound_int
 
 
-def enable_cache():
+
+def enable_cache() -> None:
     # Get cache location from settings
     settings = get_settings()
     cache_path = settings.cache_location
@@ -31,8 +33,12 @@ FPS = 25
 DT = 1 / FPS
 
 
-def _process_single_driver(args):
+
+def _process_single_driver(args: Tuple[int, Any, str]) -> Optional[Dict[str, Any]]:
     """Process telemetry data for a single driver - must be top-level for multiprocessing"""
+    driver_no: int
+    session: Any
+    driver_code: str
     driver_no, session, driver_code = args
 
     print(f"Getting telemetry for driver: {driver_code}")
@@ -144,9 +150,9 @@ def _process_single_driver(args):
     }
 
 
-def load_session(year, round_number, session_type="R"):
+def load_session(year: int, round_number: int, session_type: str = "R") -> Any:
     # session_type: 'R' (Race), 'S' (Sprint) etc.
-    session = fastf1.get_session(year, round_number, session_type)
+    session: Any = fastf1.get_session(year, round_number, session_type)
     session.load(telemetry=True, weather=True)
     return session
 
@@ -154,24 +160,24 @@ def load_session(year, round_number, session_type="R"):
 # The following functions require a loaded session object
 
 
-def get_driver_colors(session):
-    color_mapping = fastf1.plotting.get_driver_color_mapping(session)
+def get_driver_colors(session: Any) -> Dict[str, Tuple[int, int, int]]:
+    color_mapping: Dict[str, str] = fastf1.plotting.get_driver_color_mapping(session)
 
     # Convert hex colors to RGB tuples
-    rgb_colors = {}
+    rgb_colors: Dict[str, Tuple[int, int, int]] = {}
     for driver, hex_color in color_mapping.items():
         hex_color = hex_color.lstrip("#")
-        rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+        rgb: Tuple[int, int, int] = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
         rgb_colors[driver] = rgb
     return rgb_colors
 
 
-def get_circuit_rotation(session):
-    circuit = session.get_circuit_info()
+def get_circuit_rotation(session: Any) -> float:
+    circuit: Any = session.get_circuit_info()
     return circuit.rotation
 
 
-def _compute_safety_car_positions(frames, track_statuses, session):
+def _compute_safety_car_positions(frames: List[Dict[str, Any]], track_statuses: List[Dict[str, Any]], session: Any) -> None:
     """
     Simulate safety car (SC) positions for each frame based on track status.
     
@@ -536,9 +542,9 @@ def _compute_safety_car_positions(frames, track_statuses, session):
     print(f"Safety Car: Computed positions for {sc_frame_count} frames")
 
 
-def get_race_telemetry(session, session_type="R"):
-    event_name = str(session).replace(" ", "_")
-    cache_suffix = "sprint" if session_type == "S" else "race"
+def get_race_telemetry(session: Any, session_type: str = "R") -> Dict[str, Any]:
+    event_name: str = str(session).replace(" ", "_")
+    cache_suffix: str = "sprint" if session_type == "S" else "race"
 
     # Check if this data has already been computed
 
@@ -855,26 +861,26 @@ def get_race_telemetry(session, session_type="R"):
     }
 
 
-def get_qualifying_results(session):
+def get_qualifying_results(session: Any) -> List[Dict[str, Any]]:
     # Extract the qualifying results and return a list of the drivers, their positions and their lap times in each qualifying segment
 
-    results = session.results
+    results: Any = session.results
 
-    qualifying_data = []
+    qualifying_data: List[Dict[str, Any]] = []
 
     for _, row in results.iterrows():
-        driver_code = row["Abbreviation"]
+        driver_code: str = row["Abbreviation"]
         # Skip drivers with no position (DNF/DNS/no lap data)
         if pd.isna(row["Position"]):
             continue
-        position = int(row["Position"])
-        q1_time = row["Q1"]
-        q2_time = row["Q2"]
-        q3_time = row["Q3"]
-        full_name = row["FullName"]
+        position: int = int(row["Position"])
+        q1_time: Any = row["Q1"]
+        q2_time: Any = row["Q2"]
+        q3_time: Any = row["Q3"]
+        full_name: str = row["FullName"]
 
         # Convert pandas Timedelta objects to seconds (or None if NaT)
-        def convert_time_to_seconds(time_val) -> str:
+        def convert_time_to_seconds(time_val: Any) -> Optional[str]:
             if pd.isna(time_val):
                 return None
             return str(time_val.total_seconds())
@@ -893,8 +899,11 @@ def get_qualifying_results(session):
     return qualifying_data
 
 
-def get_driver_quali_telemetry(session, driver_code: str, quali_segment: str):
+def get_driver_quali_telemetry(session: Any, driver_code: str, quali_segment: str) -> Dict[str, Any]:
     # Split Q1/Q2/Q3 sections
+    q1: Any
+    q2: Any
+    q3: Any
     q1, q2, q3 = session.laps.split_qualifying_sessions()
 
     segments = {"Q1": q1, "Q2": q2, "Q3": q3}
@@ -1190,8 +1199,10 @@ def get_driver_quali_telemetry(session, driver_code: str, quali_segment: str):
     }
 
 
-def _process_quali_driver(args):
+def _process_quali_driver(args: Tuple[Any, str]) -> Dict[str, Any]:
     """Process qualifying telemetry data for a single driver - must be top-level for multiprocessing"""
+    session: Any
+    driver_code: str
     session, driver_code = args
     print(f"Getting qualifying telemetry for driver: {driver_code}")
 
@@ -1228,7 +1239,7 @@ def _process_quali_driver(args):
     }
 
 
-def get_quali_telemetry(session, session_type="Q"):
+def get_quali_telemetry(session: Any, session_type: str = "Q") -> Dict[str, Any]:
     # This function is going to get the results from qualifying and the telemetry for each drivers' fastest laps in each qualifying segment
 
     # The structure of the returned data will be:
@@ -1318,7 +1329,7 @@ def get_quali_telemetry(session, session_type="Q"):
     }
 
 
-def get_race_weekends_by_year(year):
+def get_race_weekends_by_year(year: int) -> List[Dict[str, Any]]:
     """Returns a list of race weekends for a given year."""
     enable_cache()
     schedule = fastf1.get_event_schedule(year)
@@ -1346,7 +1357,7 @@ def get_race_weekends_by_year(year):
         )
     return weekends
 
-def get_race_weekends_by_place(place):
+def get_race_weekends_by_place(place: str) -> List[Dict[str, Any]]:
     """Returns a list of past n race weekends for a given place."""
     enable_cache()
     place=place.lower().strip()
@@ -1376,7 +1387,7 @@ def get_race_weekends_by_place(place):
                 })
     return weekends
 
-def get_all_unique_race_names(start_year=2018, end_year=2025): #update as necessary
+def get_all_unique_race_names(start_year: int = 2018, end_year: int = 2025) -> List[str]: #update as necessary
     "Return a list of all unique race locations"
     enable_cache()
     race_names=set()
@@ -1396,7 +1407,7 @@ def get_all_unique_race_names(start_year=2018, end_year=2025): #update as necess
 
     return sorted(race_names)
 
-def list_rounds(year):
+def list_rounds(year: int) -> List[int]:
     """Lists all rounds for a given year."""
     enable_cache()
     print(f"F1 Schedule {year}")
@@ -1405,7 +1416,7 @@ def list_rounds(year):
         print(f"{event['RoundNumber']}: {event['EventName']}")
 
 
-def list_sprints(year):
+def list_sprints(year: int) -> List[int]:
     """Lists all sprint rounds for a given year."""
     enable_cache()
     print(f"F1 Sprint Races {year}")

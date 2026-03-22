@@ -3,6 +3,7 @@ import time
 import arcade
 import numpy as np
 from scipy.spatial import cKDTree
+from typing import Optional, List, Dict, Any, Tuple
 from src.f1_data import FPS
 from src.ui_components import (
     LeaderboardComponent, 
@@ -27,15 +28,19 @@ SCREEN_TITLE = "F1 Race Replay"
 PLAYBACK_SPEEDS = [0.1, 0.2, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0]
 
 class F1RaceReplayWindow(arcade.Window):
-    def __init__(self, frames, track_statuses, example_lap, drivers, title,
-                 playback_speed=1.0, driver_colors=None, circuit_rotation=0.0,
-                 left_ui_margin=340, right_ui_margin=260, total_laps=None, visible_hud=True,
-                 session_info=None, session=None, enable_telemetry=False):
+    def __init__(self, frames: List[Dict[str, Any]], track_statuses: List[Dict[str, Any]], 
+                 example_lap: Any, drivers: List[str], title: str,
+                 playback_speed: float = 1.0, driver_colors: Optional[Dict[str, Tuple[int, int, int]]] = None, 
+                 circuit_rotation: float = 0.0,
+                 left_ui_margin: int = 340, right_ui_margin: int = 260, 
+                 total_laps: Optional[int] = None, visible_hud: bool = True,
+                 session_info: Optional[Dict[str, Any]] = None, session: Optional[Any] = None, 
+                 enable_telemetry: bool = False) -> None:
         # Set resizable to True so the user can adjust mid-sim
         super().__init__(SCREEN_WIDTH, SCREEN_HEIGHT, title, resizable=True)
         self.maximize()
 
-        self.telemetry_stream = None
+        self.telemetry_stream: Optional[TelemetryStreamServer] = None
         if enable_telemetry:
             try:
                 self.telemetry_stream = TelemetryStreamServer()
@@ -49,28 +54,28 @@ class F1RaceReplayWindow(arcade.Window):
                 print(f"Error starting telemetry server: {e}")
                 self.telemetry_stream = None
 
-        self.frames = frames
-        self.track_statuses = track_statuses
-        self.n_frames = len(frames)
-        self.drivers = list(drivers)
-        self.playback_speed = PLAYBACK_SPEEDS[PLAYBACK_SPEEDS.index(playback_speed)] if playback_speed in PLAYBACK_SPEEDS else 1.0
-        self.driver_colors = driver_colors or {}
-        self.frame_index = 0.0  # use float for fractional-frame accumulation
-        self.paused = False
-        self.total_laps = total_laps
-        self.has_weather = any("weather" in frame for frame in frames) if frames else False
-        self.visible_hud = visible_hud # If it displays HUD or not (leaderboard, controls, weather, etc)
+        self.frames: List[Dict[str, Any]] = frames
+        self.track_statuses: List[Dict[str, Any]] = track_statuses
+        self.n_frames: int = len(frames)
+        self.drivers: List[str] = list(drivers)
+        self.playback_speed: float = PLAYBACK_SPEEDS[PLAYBACK_SPEEDS.index(playback_speed)] if playback_speed in PLAYBACK_SPEEDS else 1.0
+        self.driver_colors: Dict[str, Tuple[int, int, int]] = driver_colors or {}
+        self.frame_index: float = 0.0  # use float for fractional-frame accumulation
+        self.paused: bool = False
+        self.total_laps: Optional[int] = total_laps
+        self.has_weather: bool = any("weather" in frame for frame in frames) if frames else False
+        self.visible_hud: bool = visible_hud # If it displays HUD or not (leaderboard, controls, weather, etc)
 
         # Rotation (degrees) to apply to the whole circuit around its centre
-        self.circuit_rotation = circuit_rotation
-        self._rot_rad = float(np.deg2rad(self.circuit_rotation)) if self.circuit_rotation else 0.0
-        self._cos_rot = float(np.cos(self._rot_rad))
-        self._sin_rot = float(np.sin(self._rot_rad))
-        self.finished_drivers = []
-        self.left_ui_margin = left_ui_margin
-        self.right_ui_margin = right_ui_margin
-        self.toggle_drs_zones = True 
-        self.show_driver_labels = False
+        self.circuit_rotation: float = circuit_rotation
+        self._rot_rad: float = float(np.deg2rad(self.circuit_rotation)) if self.circuit_rotation else 0.0
+        self._cos_rot: float = float(np.cos(self._rot_rad))
+        self._sin_rot: float = float(np.sin(self._rot_rad))
+        self.finished_drivers: List[str] = []
+        self.left_ui_margin: int = left_ui_margin
+        self.right_ui_margin: int = right_ui_margin
+        self.toggle_drs_zones: bool = True 
+        self.show_driver_labels: bool = False
         # UI components
         leaderboard_x = max(20, self.width - self.right_ui_margin + 12)
         self.leaderboard_comp = LeaderboardComponent(x=leaderboard_x, width=240, visible=visible_hud)
@@ -81,7 +86,7 @@ class F1RaceReplayWindow(arcade.Window):
 
         self.controls_popup_comp.set_size(340, 250) # width/height of the popup box
         self.controls_popup_comp.set_font_sizes(header_font_size=16, body_font_size=13) # adjust font sizes
-        self.degradation_integrator = None
+        self.degradation_integrator: Optional[TyreDegradationIntegrator] = None
         if session is not None:
             try:
                 print("Initializing tyre degradation model...")
@@ -122,7 +127,7 @@ class F1RaceReplayWindow(arcade.Window):
         
         # Session info banner component
         self.session_info_comp = SessionInfoComponent(visible=visible_hud)
-        self.circuit_length_m = session_info.get('circuit_length_m') if session_info else None
+        self.circuit_length_m: Optional[float] = session_info.get('circuit_length_m') if session_info else None
         if session_info:
             self.session_info_comp.set_info(
                 event_name=session_info.get('event_name', ''),
@@ -134,9 +139,9 @@ class F1RaceReplayWindow(arcade.Window):
                 total_laps=total_laps
             )
 
-        self.is_rewinding = False
-        self.is_forwarding = False
-        self.was_paused_before_hold = False
+        self.is_rewinding: bool = False
+        self.is_forwarding: bool = False
+        self.was_paused_before_hold: bool = False
         
         # Extract race events for the progress bar
         race_events = extract_race_events(frames, track_statuses, total_laps or 0)
@@ -154,92 +159,92 @@ class F1RaceReplayWindow(arcade.Window):
          self.y_min, self.y_max, self.drs_zones) = build_track_from_example_lap(example_lap)
 
         # Build a dense reference polyline (used for projecting car (x,y) -> along-track distance)
-        ref_points = self._interpolate_points(self.plot_x_ref, self.plot_y_ref, interp_points=4000)
+        ref_points: List[Tuple[float, float]] = self._interpolate_points(self.plot_x_ref, self.plot_y_ref, interp_points=4000)
         # store as numpy arrays for vectorized ops
-        self._ref_xs = np.array([p[0] for p in ref_points])
-        self._ref_ys = np.array([p[1] for p in ref_points])
+        self._ref_xs: np.ndarray = np.array([p[0] for p in ref_points])
+        self._ref_ys: np.ndarray = np.array([p[1] for p in ref_points])
 
         # Calculate normals for the reference line
-        dx = np.gradient(self._ref_xs)
-        dy = np.gradient(self._ref_ys)
-        norm = np.sqrt(dx**2 + dy**2)
+        dx: np.ndarray = np.gradient(self._ref_xs)
+        dy: np.ndarray = np.gradient(self._ref_ys)
+        norm: np.ndarray = np.sqrt(dx**2 + dy**2)
         norm[norm == 0] = 1.0
-        self._ref_nx = -dy / norm
-        self._ref_ny = dx / norm
+        self._ref_nx: np.ndarray = -dy / norm
+        self._ref_ny: np.ndarray = dx / norm
 
         # Build KD-Tree for fast closest-point lookup
-        self.track_tree = cKDTree(np.column_stack((self._ref_xs, self._ref_ys)))
+        self.track_tree: cKDTree = cKDTree(np.column_stack((self._ref_xs, self._ref_ys)))
 
         # Determine track winding using the shoelace formula to ensure normals point outwards.
         # A positive area indicates counter-clockwise winding (normals point Left=Inside, so we flip).
         # A negative area indicates clockwise winding (normals point Left=Outside, so we keep).
-        signed_area = np.sum(self._ref_xs[:-1] * self._ref_ys[1:] - self._ref_xs[1:] * self._ref_ys[:-1])
+        signed_area: float = np.sum(self._ref_xs[:-1] * self._ref_ys[1:] - self._ref_xs[1:] * self._ref_ys[:-1])
         signed_area += (self._ref_xs[-1] * self._ref_ys[0] - self._ref_xs[0] * self._ref_ys[-1])
         if signed_area > 0:
             self._ref_nx = -self._ref_nx
             self._ref_ny = -self._ref_ny
 
         # cumulative distances along the reference polyline (metres)
-        diffs = np.sqrt(np.diff(self._ref_xs)**2 + np.diff(self._ref_ys)**2)
-        self._ref_seg_len = diffs
-        self._ref_cumdist = np.concatenate(([0.0], np.cumsum(diffs)))
-        self._ref_total_length = float(self._ref_cumdist[-1]) if len(self._ref_cumdist) > 0 else 0.0
+        diffs: np.ndarray = np.sqrt(np.diff(self._ref_xs)**2 + np.diff(self._ref_ys)**2)
+        self._ref_seg_len: np.ndarray = diffs
+        self._ref_cumdist: np.ndarray = np.concatenate(([0.0], np.cumsum(diffs)))
+        self._ref_total_length: float = float(self._ref_cumdist[-1]) if len(self._ref_cumdist) > 0 else 0.0
 
         # Pre-calculate interpolated world points ONCE (optimization)
-        self.world_inner_points = self._interpolate_points(self.x_inner, self.y_inner)
-        self.world_outer_points = self._interpolate_points(self.x_outer, self.y_outer)
+        self.world_inner_points: List[Tuple[float, float]] = self._interpolate_points(self.x_inner, self.y_inner)
+        self.world_outer_points: List[Tuple[float, float]] = self._interpolate_points(self.x_outer, self.y_outer)
 
         # These will hold the actual screen coordinates to draw
-        self.screen_inner_points = []
-        self.screen_outer_points = []
+        self.screen_inner_points: List[Tuple[float, float]] = []
+        self.screen_outer_points: List[Tuple[float, float]] = []
         
         # Scaling parameters (initialized to 0, calculated in update_scaling)
-        self.world_scale = 1.0
-        self.tx = 0
-        self.ty = 0
+        self.world_scale: float = 1.0
+        self.tx: float = 0.0
+        self.ty: float = 0.0
 
         # Load Background
-        bg_path = os.path.join("resources", "background.png")
-        self.bg_texture = arcade.load_texture(bg_path) if os.path.exists(bg_path) else None
+        bg_path: str = os.path.join("resources", "background.png")
+        self.bg_texture: Optional[arcade.Texture] = arcade.load_texture(bg_path) if os.path.exists(bg_path) else None
 
         arcade.set_background_color(arcade.color.BLACK)
 
         # Persistent UI Text objects (avoid per-frame allocations)
-        self.lap_text = arcade.Text("", 20, self.height - 40, arcade.color.WHITE, 24, anchor_y="top")
-        self.time_text = arcade.Text("", 20, self.height - 80, arcade.color.WHITE, 20, anchor_y="top")
-        self.status_text = arcade.Text("", 20, self.height - 120, arcade.color.WHITE, 24, bold=True, anchor_y="top")
+        self.lap_text: arcade.Text = arcade.Text("", 20, self.height - 40, arcade.color.WHITE, 24, anchor_y="top")
+        self.time_text: arcade.Text = arcade.Text("", 20, self.height - 80, arcade.color.WHITE, 20, anchor_y="top")
+        self.status_text: arcade.Text = arcade.Text("", 20, self.height - 120, arcade.color.WHITE, 24, bold=True, anchor_y="top")
 
         # Trigger initial scaling calculation
         self.update_scaling(self.width, self.height)
 
         # Selection & hit-testing state for leaderboard
-        self.selected_driver = None
-        self.leaderboard_rects = []  # list of tuples: (code, left, bottom, right, top)
+        self.selected_driver: Optional[str] = None
+        self.leaderboard_rects: List[Tuple[str, float, float, float, float]] = []  # list of tuples: (code, left, bottom, right, top)
         # store previous leaderboard order for up/down arrows
-        self.last_leaderboard_order = None
+        self.last_leaderboard_order: Optional[List[str]] = None
         
         # Broadcast initial telemetry state
         self._broadcast_telemetry_state()
 
-    def _broadcast_telemetry_state(self):
+    def _broadcast_telemetry_state(self) -> None:
         """Broadcast current telemetry state to connected clients."""
         if not hasattr(self, 'telemetry_stream') or not self.telemetry_stream:
             return
             
-        current_frame = self.frames[min(int(self.frame_index), len(self.frames) - 1)] if self.frames else None
+        current_frame: Optional[Dict[str, Any]] = self.frames[min(int(self.frame_index), len(self.frames) - 1)] if self.frames else None
         
         # Get current track status
-        current_track_status = "GREEN"
+        current_track_status: str = "GREEN"
         if current_frame:
-            current_time = current_frame["t"]
+            current_time: float = current_frame["t"]
             for status in self.track_statuses:
                 if (current_time >= status["start_time"] and 
                     (status["end_time"] is None or current_time <= status["end_time"])):
                     current_track_status = status["status"]
                     
         # Calculate leader info
-        leader_code = ""
-        leader_lap = 1
+        leader_code: str = ""
+        leader_lap: int = 1
         if current_frame and "drivers" in current_frame:
             driver_progress = {}
             for code, pos in current_frame["drivers"].items():
