@@ -4,7 +4,7 @@ import arcade
 import numpy as np
 from scipy.spatial import cKDTree
 from src.f1_data import FPS
-from src.ui_components import (
+from src.ui.components import (
     LeaderboardComponent, 
     WeatherComponent, 
     LegendComponent, 
@@ -13,9 +13,11 @@ from src.ui_components import (
     RaceControlsComponent,
     ControlsPopupComponent,
     SessionInfoComponent,
+)
+from src.ui.utils import (
     extract_race_events,
     build_track_from_example_lap,
-    draw_finish_line
+    draw_finish_line,
 )
 from src.tyre_degradation_integration import TyreDegradationIntegrator
 from src.services.stream import TelemetryStreamServer

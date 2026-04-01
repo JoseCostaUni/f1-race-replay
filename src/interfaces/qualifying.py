@@ -2,15 +2,17 @@ import arcade
 import threading
 import time
 import numpy as np
-from src.ui_components import (
-    build_track_from_example_lap,
+from src.ui.components import (
     LapTimeLeaderboardComponent,
-    QualifyingSegmentSelectorComponent,
     RaceControlsComponent,
-    draw_finish_line,
     LegendComponent,
     ControlsPopupComponent,
     QualifyingLapTimeComponent,
+    QualifyingSegmentSelectorComponent,
+)
+from src.ui.utils import (
+    build_track_from_example_lap,
+    draw_finish_line,
 )
 from src.f1_data import get_driver_quali_telemetry
 from src.f1_data import FPS
