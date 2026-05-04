@@ -649,6 +649,10 @@ class F1RaceReplayWindow(arcade.Window):
             # Project (x,y) to reference and combine with lap count
             projected_m = self._project_to_reference(pos.get("x", 0.0), pos.get("y", 0.0))
 
+            # Fix for Lap 1 grid positions
+            if lap == 1 and projected_m > self._ref_total_length * 0.5:
+                projected_m -= self._ref_total_length
+
             # progress in metres since race start: (lap-1) * lap_length + projected_m
             progress_m = float((max(lap, 1) - 1) * self._ref_total_length + projected_m)
 
